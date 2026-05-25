@@ -241,12 +241,12 @@
 
 
 
-
-
 import streamlit as st
 import PIL.Image
 import os
 import uuid
+from proglog import ProgressBarLogger
+import traceback
 
 # --- THE FIX: Monkey Patch for Pillow 10+ ---
 if not hasattr(PIL.Image, 'ANTIALIAS'):
@@ -256,6 +256,21 @@ if not hasattr(PIL.Image, 'ANTIALIAS'):
 from moviepy.editor import VideoFileClip, CompositeVideoClip, ColorClip, ImageClip, concatenate_videoclips
 import moviepy.video.fx.all as vfx
 from moviepy.audio.AudioClip import CompositeAudioClip
+
+# --- CUSTOM LOGGER CLASS ---
+class StreamlitProgressLogger(ProgressBarLogger):
+    def __init__(self, progress_bar, status_text):
+        super().__init__()
+        self.progress_bar = progress_bar
+        self.status_text = status_text
+
+    def bars_callback(self, bar, attr, value, old_value=None):
+        total = self.bars[bar]['total']
+        if total > 0:
+            percentage = value / total
+            clamped_pct = max(0.0, min(1.0, percentage))
+            self.progress_bar.progress(clamped_pct)
+            self.status_text.markdown(f"**Rendering in progress:** {int(clamped_pct * 100)}%")
 
 st.set_page_config(page_title="Batch News Broadcaster", layout="wide")
 
@@ -285,7 +300,7 @@ with st.container(border=True):
         if anchor_files:
             for i, f in enumerate(anchor_files):
                 with st.expander(f"Clip {i+1}: {f.name}", expanded=True):
-                    st.video(f) # IN-APP PREVIEW
+                    st.video(f)
                     c1, c2 = st.columns(2)
                     with c1: a_start = st.text_input("Start (MM:SS)", value="00:00", key=f"a_start_{i}")
                     with c2: a_end = st.text_input("End (MM:SS)", value="", placeholder="Leave blank for full", key=f"a_end_{i}")
@@ -300,7 +315,7 @@ with st.container(border=True):
         if event_files:
             for i, f in enumerate(event_files):
                 with st.expander(f"Clip {i+1}: {f.name}", expanded=True):
-                    st.video(f) # IN-APP PREVIEW
+                    st.video(f)
                     c1, c2 = st.columns(2)
                     with c1: e_start = st.text_input("Start (MM:SS)", value="00:00", key=f"e_start_{i}")
                     with c2: e_end = st.text_input("End (MM:SS)", value="", placeholder="Leave blank for full", key=f"e_end_{i}")
@@ -322,27 +337,23 @@ with st.container(border=True):
             job_id = str(uuid.uuid4())[:8]
             os.makedirs("temp_queue", exist_ok=True)
             
-            # Save all Anchor files
             saved_anchors = []
             for i, cfg in enumerate(anchor_configs):
                 path = f"temp_queue/{job_id}_anchor_{i}.mp4"
                 with open(path, "wb") as f_out: f_out.write(cfg["file"].read())
                 saved_anchors.append({"path": path, "start": cfg["start"], "end": cfg["end"] if cfg["end"].strip() != "" else None})
 
-            # Save all Event files
             saved_events = []
             for i, cfg in enumerate(event_configs):
                 path = f"temp_queue/{job_id}_event_{i}.mp4"
                 with open(path, "wb") as f_out: f_out.write(cfg["file"].read())
                 saved_events.append({"path": path, "start": cfg["start"], "end": cfg["end"] if cfg["end"].strip() != "" else None})
             
-            # Save Logo
             p_logo = None
             if logo_file:
                 p_logo = f"temp_queue/{job_id}_logo.png"
                 with open(p_logo, "wb") as f_out: f_out.write(logo_file.read())
 
-            # Add to memory
             st.session_state.job_queue.append({
                 "id": job_id,
                 "name": job_name,
@@ -375,6 +386,8 @@ for job in st.session_state.job_queue:
         with col_b:
             with open(job['output'], "rb") as f:
                 st.download_button(label="⬇️ Download", data=f, file_name=f"{job['name']}.mp4", mime="video/mp4", key=f"dl_{job['id']}")
+    elif job['status'] == "Failed":
+        st.error(f"❌ **Failed:** {job['name']}")
 
 if len(st.session_state.job_queue) > 0:
     waiting_jobs = [j for j in st.session_state.job_queue if j['status'] == "Waiting"]
@@ -389,8 +402,13 @@ if len(st.session_state.job_queue) > 0:
             if job['status'] == "Waiting":
                 job['status'] = "Processing"
                 
+                # --- UI Elements for Tracking & Logging ---
+                st.write(f"### Processing: {job['name']}")
+                status_text = st.empty()
+                progress_bar = st.progress(0.0)
+                error_container = st.empty()
+                
                 try:
-                    # --- HELPER: Process and Stitch Multiple Clips ---
                     def build_master_clip(clip_data_list):
                         processed_clips = []
                         for c_data in clip_data_list:
@@ -402,22 +420,21 @@ if len(st.session_state.job_queue) > 0:
                             return processed_clips[0]
                         return concatenate_videoclips(processed_clips, method="compose")
 
-                    # 1. Stitch Left and Right Master Clips
+                    status_text.markdown("**Step 1:** Stitching master clips...")
                     clip1 = build_master_clip(job['anchors'])
                     clip2 = build_master_clip(job['events'])
                     
-                    # --- THE FIX: Separate Audio Before Looping ---
+                    status_text.markdown("**Step 2:** Separating audio...")
                     audio1 = clip1.audio
                     audio2 = clip2.audio
                     clip1 = clip1.without_audio()
                     clip2 = clip2.without_audio()
                     
-                    # 2. Handle Duration Loop (Match the longest side)
                     max_duration = max(clip1.duration, clip2.duration)
                     if clip1.duration < max_duration: clip1 = clip1.fx(vfx.loop, duration=max_duration)
                     if clip2.duration < max_duration: clip2 = clip2.fx(vfx.loop, duration=max_duration)
 
-                    # 3. Crop and Fill Logic (No Black Bars)
+                    status_text.markdown("**Step 3:** Cropping and positioning...")
                     def crop_and_fill(clip, target_w=960, target_h=1080):
                         current_ratio = clip.w / clip.h
                         target_ratio = target_w / target_h
@@ -433,11 +450,9 @@ if len(st.session_state.job_queue) > 0:
                     clip1 = crop_and_fill(clip1)
                     clip2 = crop_and_fill(clip2)
                     
-                    # 4. Position Flush with Edges
                     clip1 = clip1.set_position((0, 0))
                     clip2 = clip2.set_position((960, 0))
                     
-                    # 5. Canvas & Layers
                     canvas = ColorClip(size=(1920, 1080), color=(0,0,0), duration=max_duration)
                     video_layers = [canvas, clip1, clip2]
                     
@@ -446,7 +461,6 @@ if len(st.session_state.job_queue) > 0:
                         logo_clip = logo_clip.set_position((1920 - logo_clip.w - 50, 50)).set_duration(max_duration)
                         video_layers.append(logo_clip)
                     
-                    # 6. Audio Handling (Safely padded with silence)
                     base_audio = None
                     if job['audio'] == "Keep Anchor Audio" and audio1: base_audio = audio1
                     elif job['audio'] == "Keep Event Audio" and audio2: base_audio = audio2
@@ -464,14 +478,31 @@ if len(st.session_state.job_queue) > 0:
                     os.makedirs("finished_renders", exist_ok=True)
                     out_path = f"finished_renders/{job['name']}_{job['id']}.mp4"
                     
-                    # 7. RENDER
-                    final_video.write_videofile(out_path, codec="libx264", audio_codec="aac", preset="ultrafast")
+                    status_text.markdown("**Step 4:** Rendering final video...")
+                    my_logger = StreamlitProgressLogger(progress_bar, status_text)
+                    
+                    final_video.write_videofile(
+                        out_path, 
+                        codec="libx264", 
+                        audio_codec="aac", 
+                        preset="ultrafast",
+                        logger=my_logger
+                    )
                     
                     job['output'] = out_path
                     job['status'] = "Done"
                     
+                    status_text.success("✅ Render complete!")
+                    progress_bar.empty()
+                    
+                except Exception as e:
+                    job['status'] = "Failed"
+                    error_traceback = traceback.format_exc()
+                    status_text.error("❌ CRITICAL RENDER FAILURE")
+                    with error_container.expander("Show detailed crash logs"):
+                        st.code(error_traceback, language="python")
+                    
                 finally:
-                    # CLEANUP MEMORY AND FILES
                     try: clip1.close() 
                     except: pass
                     try: clip2.close() 
@@ -480,7 +511,6 @@ if len(st.session_state.job_queue) > 0:
                         try: logo_clip.close()
                         except: pass
                     
-                    # Delete temp hard drive files
                     for a in job['anchors']:
                         if os.path.exists(a['path']): os.remove(a['path'])
                     for e in job['events']:
