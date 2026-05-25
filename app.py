@@ -1,7 +1,6 @@
 # import streamlit as st
 # import PIL.Image
 # import os
-# import tempfile
 # import uuid
 
 # # --- THE FIX: Monkey Patch for Pillow 10+ ---
@@ -9,41 +8,61 @@
 #     PIL.Image.ANTIALIAS = PIL.Image.Resampling.LANCZOS
 # # ---------------------------------------------
 
-# from moviepy.editor import VideoFileClip, CompositeVideoClip, ColorClip, ImageClip
+# from moviepy.editor import VideoFileClip, CompositeVideoClip, ColorClip, ImageClip, concatenate_videoclips
 # import moviepy.video.fx.all as vfx
 
 # st.set_page_config(page_title="Batch News Broadcaster", layout="wide")
 
-# # --- INITIALIZE SESSION STATE (THE QUEUE MEMORY) ---
+# # --- INITIALIZE SESSION STATE ---
 # if 'job_queue' not in st.session_state:
 #     st.session_state.job_queue = []
 # if 'is_processing' not in st.session_state:
 #     st.session_state.is_processing = False
 
 # st.title("📺 Batch News Broadcast Generator")
-# st.markdown("Upload pairs, trim durations, and process them sequentially to save computer memory.")
+# st.markdown("Upload multiple clips per side, preview durations, and stitch them seamlessly.")
 
 # # ==========================================
 # # SECTION 1: ADD TO QUEUE
 # # ==========================================
-# st.subheader("1. Add a Pair to the Queue")
+# st.subheader("1. Build Your Broadcast Sequence")
 
 # with st.container(border=True):
 #     col1, col2 = st.columns(2)
+    
+#     # --- LEFT SIDE (ANCHORS) ---
 #     with col1:
-#         vid1_file = st.file_uploader("Upload Anchor Video (Left)", type=['mp4', 'mov', 'avi'], key="anchor_up")
-#         col1a, col1b = st.columns(2)
-#         with col1a: a_start = st.text_input("Start Time (MM:SS)", value="00:00", key="a_start")
-#         with col1b: a_end = st.text_input("End Time (MM:SS)", value="", placeholder="Leave blank for full", key="a_end")
+#         st.markdown("### 🗣️ Anchor Videos (Left)")
+#         anchor_files = st.file_uploader("Upload Anchor Clips", type=['mp4', 'mov', 'avi'], accept_multiple_files=True, key="anchor_up")
+#         anchor_configs = []
+        
+#         if anchor_files:
+#             for i, f in enumerate(anchor_files):
+#                 with st.expander(f"Clip {i+1}: {f.name}", expanded=True):
+#                     st.video(f) # IN-APP PREVIEW
+#                     c1, c2 = st.columns(2)
+#                     with c1: a_start = st.text_input("Start (MM:SS)", value="00:00", key=f"a_start_{i}")
+#                     with c2: a_end = st.text_input("End (MM:SS)", value="", placeholder="Leave blank for full", key=f"a_end_{i}")
+#                     anchor_configs.append({"file": f, "start": a_start, "end": a_end})
 
+#     # --- RIGHT SIDE (EVENTS) ---
 #     with col2:
-#         vid2_file = st.file_uploader("Upload Event Video (Right)", type=['mp4', 'mov', 'avi'], key="event_up")
-#         col2a, col2b = st.columns(2)
-#         with col2a: e_start = st.text_input("Start Time (MM:SS)", value="00:00", key="e_start")
-#         with col2b: e_end = st.text_input("End Time (MM:SS)", value="", placeholder="Leave blank for full", key="e_end")
+#         st.markdown("### 🎥 Event Videos (Right)")
+#         event_files = st.file_uploader("Upload Event Clips", type=['mp4', 'mov', 'avi'], accept_multiple_files=True, key="event_up")
+#         event_configs = []
+        
+#         if event_files:
+#             for i, f in enumerate(event_files):
+#                 with st.expander(f"Clip {i+1}: {f.name}", expanded=True):
+#                     st.video(f) # IN-APP PREVIEW
+#                     c1, c2 = st.columns(2)
+#                     with c1: e_start = st.text_input("Start (MM:SS)", value="00:00", key=f"e_start_{i}")
+#                     with c2: e_end = st.text_input("End (MM:SS)", value="", placeholder="Leave blank for full", key=f"e_end_{i}")
+#                     event_configs.append({"file": f, "start": e_start, "end": e_end})
 
 #     st.divider()
     
+#     # --- GLOBAL SETTINGS ---
 #     col3, col4 = st.columns(2)
 #     with col3:
 #         audio_choice = st.radio("Choose audio source:", ("Keep Anchor Audio", "Keep Event Audio", "Mix Both"), key="audio_up")
@@ -52,32 +71,37 @@
 
 #     job_name = st.text_input("Name this broadcast (e.g., 'Morning_Segment_1')")
 
-#     if st.button("➕ Add Pair to Queue", type="primary"):
-#         if vid1_file and vid2_file and job_name:
-#             # Save files to disk immediately
+#     if st.button("➕ Add Sequence to Queue", type="primary"):
+#         if anchor_files and event_files and job_name:
 #             job_id = str(uuid.uuid4())[:8]
 #             os.makedirs("temp_queue", exist_ok=True)
             
-#             p1 = f"temp_queue/{job_id}_anchor.mp4"
-#             p2 = f"temp_queue/{job_id}_event.mp4"
-#             with open(p1, "wb") as f: f.write(vid1_file.read())
-#             with open(p2, "wb") as f: f.write(vid2_file.read())
+#             # Save all Anchor files
+#             saved_anchors = []
+#             for i, cfg in enumerate(anchor_configs):
+#                 path = f"temp_queue/{job_id}_anchor_{i}.mp4"
+#                 with open(path, "wb") as f_out: f_out.write(cfg["file"].read())
+#                 saved_anchors.append({"path": path, "start": cfg["start"], "end": cfg["end"] if cfg["end"].strip() != "" else None})
+
+#             # Save all Event files
+#             saved_events = []
+#             for i, cfg in enumerate(event_configs):
+#                 path = f"temp_queue/{job_id}_event_{i}.mp4"
+#                 with open(path, "wb") as f_out: f_out.write(cfg["file"].read())
+#                 saved_events.append({"path": path, "start": cfg["start"], "end": cfg["end"] if cfg["end"].strip() != "" else None})
             
+#             # Save Logo
 #             p_logo = None
 #             if logo_file:
 #                 p_logo = f"temp_queue/{job_id}_logo.png"
-#                 with open(p_logo, "wb") as f: f.write(logo_file.read())
+#                 with open(p_logo, "wb") as f_out: f_out.write(logo_file.read())
 
 #             # Add to memory
 #             st.session_state.job_queue.append({
 #                 "id": job_id,
 #                 "name": job_name,
-#                 "anchor": p1,
-#                 "anchor_start": a_start,
-#                 "anchor_end": a_end if a_end.strip() != "" else None,
-#                 "event": p2,
-#                 "event_start": e_start,
-#                 "event_end": e_end if e_end.strip() != "" else None,
+#                 "anchors": saved_anchors,
+#                 "events": saved_events,
 #                 "logo": p_logo,
 #                 "audio": audio_choice,
 #                 "status": "Waiting",
@@ -86,7 +110,7 @@
 #             st.success(f"Added '{job_name}' to queue!")
 #             st.rerun() 
 #         else:
-#             st.error("Please upload both videos and give the job a name.")
+#             st.error("Please upload at least one video per side and name the job.")
 
 # # ==========================================
 # # SECTION 2: QUEUE DASHBOARD & PROCESSING
@@ -101,8 +125,7 @@
 #         st.warning(f"⚙️ **Processing right now:** {job['name']}")
 #     elif job['status'] == "Done":
 #         col_a, col_b = st.columns([3, 1])
-#         with col_a:
-#             st.success(f"✅ **Finished:** {job['name']}")
+#         with col_a: st.success(f"✅ **Finished:** {job['name']}")
 #         with col_b:
 #             with open(job['output'], "rb") as f:
 #                 st.download_button(label="⬇️ Download", data=f, file_name=f"{job['name']}.mp4", mime="video/mp4", key=f"dl_{job['id']}")
@@ -121,17 +144,23 @@
 #                 job['status'] = "Processing"
                 
 #                 try:
-#                     clip1 = VideoFileClip(job['anchor'])
-#                     clip2 = VideoFileClip(job['event'])
+#                     # --- HELPER: Process and Stitch Multiple Clips ---
+#                     def build_master_clip(clip_data_list):
+#                         processed_clips = []
+#                         for c_data in clip_data_list:
+#                             c = VideoFileClip(c_data['path'])
+#                             if c_data['start'] != "00:00" or c_data['end']:
+#                                 c = c.subclip(c_data['start'], c_data['end'])
+#                             processed_clips.append(c)
+#                         if len(processed_clips) == 1:
+#                             return processed_clips[0]
+#                         return concatenate_videoclips(processed_clips, method="compose")
+
+#                     # 1. Stitch Left and Right Master Clips
+#                     clip1 = build_master_clip(job['anchors'])
+#                     clip2 = build_master_clip(job['events'])
                     
-#                     # 1. APPLY TRIMMING (SUBCLIP) FIRST
-#                     if job['anchor_start'] != "00:00" or job['anchor_end']:
-#                         clip1 = clip1.subclip(job['anchor_start'], job['anchor_end'])
-                        
-#                     if job['event_start'] != "00:00" or job['event_end']:
-#                         clip2 = clip2.subclip(job['event_start'], job['event_end'])
-                    
-#                     # 2. Handle Duration Loop
+#                     # 2. Handle Duration Loop (Match the longest side)
 #                     max_duration = max(clip1.duration, clip2.duration)
 #                     if clip1.duration < max_duration: clip1 = clip1.fx(vfx.loop, duration=max_duration)
 #                     if clip2.duration < max_duration: clip2 = clip2.fx(vfx.loop, duration=max_duration)
@@ -188,7 +217,7 @@
 #                     job['status'] = "Done"
                     
 #                 finally:
-#                     # CLEANUP TO SAVE RAM FOR THE NEXT VIDEO
+#                     # CLEANUP MEMORY AND FILES
 #                     try: clip1.close() 
 #                     except: pass
 #                     try: clip2.close() 
@@ -197,17 +226,17 @@
 #                         try: logo_clip.close()
 #                         except: pass
                     
-#                     # Delete the temp inputs to save hard drive space
-#                     if os.path.exists(job['anchor']): os.remove(job['anchor'])
-#                     if os.path.exists(job['event']): os.remove(job['event'])
+#                     # Delete temp hard drive files
+#                     for a in job['anchors']:
+#                         if os.path.exists(a['path']): os.remove(a['path'])
+#                     for e in job['events']:
+#                         if os.path.exists(e['path']): os.remove(e['path'])
 #                     if job['logo'] and os.path.exists(job['logo']): os.remove(job['logo'])
                 
-#                 # Refresh UI after each video finishes
 #                 st.rerun() 
         
 #         st.session_state.is_processing = False
 #         st.success("🎉 Entire queue is finished!")
-
 
 
 
@@ -226,6 +255,7 @@ if not hasattr(PIL.Image, 'ANTIALIAS'):
 
 from moviepy.editor import VideoFileClip, CompositeVideoClip, ColorClip, ImageClip, concatenate_videoclips
 import moviepy.video.fx.all as vfx
+from moviepy.audio.AudioClip import CompositeAudioClip
 
 st.set_page_config(page_title="Batch News Broadcaster", layout="wide")
 
@@ -376,6 +406,12 @@ if len(st.session_state.job_queue) > 0:
                     clip1 = build_master_clip(job['anchors'])
                     clip2 = build_master_clip(job['events'])
                     
+                    # --- THE FIX: Separate Audio Before Looping ---
+                    audio1 = clip1.audio
+                    audio2 = clip2.audio
+                    clip1 = clip1.without_audio()
+                    clip2 = clip2.without_audio()
+                    
                     # 2. Handle Duration Loop (Match the longest side)
                     max_duration = max(clip1.duration, clip2.duration)
                     if clip1.duration < max_duration: clip1 = clip1.fx(vfx.loop, duration=max_duration)
@@ -410,18 +446,20 @@ if len(st.session_state.job_queue) > 0:
                         logo_clip = logo_clip.set_position((1920 - logo_clip.w - 50, 50)).set_duration(max_duration)
                         video_layers.append(logo_clip)
                     
-                    # 6. Audio Handling
-                    final_audio = None
-                    if job['audio'] == "Keep Anchor Audio" and clip1.audio: final_audio = clip1.audio
-                    elif job['audio'] == "Keep Event Audio" and clip2.audio: final_audio = clip2.audio
-                    elif job['audio'] == "Mix Both" and clip1.audio and clip2.audio:
-                        from moviepy.audio.AudioClip import CompositeAudioClip
-                        final_audio = CompositeAudioClip([clip1.audio, clip2.audio])
+                    # 6. Audio Handling (Safely padded with silence)
+                    base_audio = None
+                    if job['audio'] == "Keep Anchor Audio" and audio1: base_audio = audio1
+                    elif job['audio'] == "Keep Event Audio" and audio2: base_audio = audio2
+                    elif job['audio'] == "Mix Both" and audio1 and audio2:
+                        base_audio = CompositeAudioClip([audio1, audio2])
                     else:
-                        final_audio = clip1.audio or clip2.audio
+                        base_audio = audio1 or audio2
                         
                     final_video = CompositeVideoClip(video_layers)
-                    if final_audio: final_video = final_video.set_audio(final_audio)
+                    
+                    if base_audio:
+                        final_audio = CompositeAudioClip([base_audio]).set_duration(max_duration)
+                        final_video = final_video.set_audio(final_audio)
                     
                     os.makedirs("finished_renders", exist_ok=True)
                     out_path = f"finished_renders/{job['name']}_{job['id']}.mp4"
