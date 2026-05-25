@@ -241,6 +241,9 @@
 
 
 
+
+
+
 import streamlit as st
 import PIL.Image
 import os
@@ -461,6 +464,7 @@ if len(st.session_state.job_queue) > 0:
                         logo_clip = logo_clip.set_position((1920 - logo_clip.w - 50, 50)).set_duration(max_duration)
                         video_layers.append(logo_clip)
                     
+                    # --- THE FIX: Lock the audio boundary ---
                     base_audio = None
                     if job['audio'] == "Keep Anchor Audio" and audio1: base_audio = audio1
                     elif job['audio'] == "Keep Event Audio" and audio2: base_audio = audio2
@@ -472,6 +476,7 @@ if len(st.session_state.job_queue) > 0:
                     final_video = CompositeVideoClip(video_layers)
                     
                     if base_audio:
+                        base_audio = base_audio.set_end(base_audio.duration)
                         final_audio = CompositeAudioClip([base_audio]).set_duration(max_duration)
                         final_video = final_video.set_audio(final_audio)
                     
